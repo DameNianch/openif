@@ -1,0 +1,111 @@
+name: Release to PyPI
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: pypi-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      # GitHub expression string comparisons are case-insensitive.
+      - name: Require the exact main branch
+        run: test "$GITHUB_REF" = refs/heads/main
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Build and check distributions
+        run: |
+          python -m pip install build twine pytest
+          python -m build
+          python -m twine check --strict dist/*
+
+      - name: Install the wheel and test the official model
+        env:
+          OPENIF_TEST_MODEL: "1"
+        run: |
+          python -m pip install dist/*.whl
+          python -m pip check
+          cd "$RUNNER_TEMP"
+          python -I -m pytest -q "$GITHUB_WORKSPACE/tests"
+
+      - name: Install the sdist and predict offline
+        env:
+          HF_HUB_OFFLINE: "1"
+        run: |
+          python -m pip install --force-reinstall --no-deps dist/*.tar.gz
+          cd "$RUNNER_TEMP"
+          python -I - <<'PY'
+          from openif import Classifier
+          model = Classifier.from_pretrained("openif/gpr-1-nasubi-massive", local_files_only=True)
+          assert model.predict("明日の天気を教えて") == "weather_query"
+          PY
+
+      - name: Read the distribution version
+        id: metadata
+        run: python -I -c 'from importlib.metadata import version; print("version=" + version("openif"))' >> "$GITHUB_OUTPUT"
+
+      - name: Save the tested distributions
+        id: upload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: openif-dist-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/openif/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the tested distributions
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-id }}
+          path: dist
+          merge-multiple: true
+          digest-mismatch: error
+
+      - name: Require an unpublished version
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          test -n "$VERSION"
+          status=$(curl --silent --show-error --retry 2 --max-time 30 --output /dev/null \
+            --write-out '%{http_code}' "https://pypi.org/pypi/openif/$VERSION/json")
+          case "$status" in
+            404) ;;
+            200) echo "::error::openif $VERSION is already published."; exit 1 ;;
+            *) echo "::error::Cannot verify openif $VERSION on PyPI (HTTP $status)."; exit 1 ;;
+          esac
+
+      - name: Publish via PyPI Trusted Publishing
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+        with:
+          packages-dir: dist/
+          skip-existing: false
