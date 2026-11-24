@@ -68,3 +68,7 @@ The classifier projects onto 269,048 dimensions. Its head contains 16,142,880 le
 ## Distribution terms
 
 The package and trained-model licenses are under review. OpenIF is an independent project. The source distribution includes data and dictionary notices in `NOTICE.md` and the first-release procedure in `docs/release.md`.
+
+## License
+
+Licensing terms are currently under review. Commercial use and redistribution permissions have not yet been established.
