@@ -1,0 +1,2 @@
+include scripts/source_characters.py
+include docs/release.md
